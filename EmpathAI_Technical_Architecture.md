@@ -17,20 +17,56 @@ EmpathAI is a cloud-native, AI-powered emotional based learning platform for sch
 
 ```mermaid
 graph TD
-    A["👨‍🎓 Students / 👩‍💼 Admins<br/>(Browser / Mobile)"] --> B["CloudFront CDN"]
-    B --> C["S3 — React SPA<br/>Static Hosting"]
-    B --> D["ALB Application Load Balancer"]
-    D --> E["ECS Fargate Cluster<br/>Spring Boot API"]
-    E --> F["RDS PostgreSQL<br/>(Multi-AZ)"]
-    E --> G["ElastiCache Redis<br/>(JWT Blacklist / Cache)"]
-    E --> H["S3 — File Storage<br/>(Uploads / Assets)"]
-    E --> I["AWS Bedrock<br/>Claude 3 Sonnet<br/>(ChatBuddy AI)"]
-    E --> J["SageMaker Endpoint<br/>Custom ML Model<br/>(Wellness Scoring)"]
-    E --> K["SES — Email Service"]
-    E --> L["CloudWatch<br/>Logs + Metrics + Alarms"]
-    M["Cognito<br/>(Future SSO)"] -.-> E
-    N["WAF + Shield"] --> B
-    N --> D
+    USER(["👨‍🎓 Students  |  👩‍💼 Admins\nBrowser · Mobile App"])
+
+    subgraph EDGE ["🛡️  Edge & Security Layer"]
+        R53["Route 53\nDNS · Health Routing"]
+        WAF["WAF + Shield Standard\nOWASP Rules · Rate Limiting"]
+        CF["CloudFront CDN\nSSL Termination · Brotli Compression"]
+    end
+
+    subgraph FRONT ["🖥️  Frontend"]
+        S3FE["S3 Static Hosting\nReact 18 + Vite SPA"]
+    end
+
+    subgraph COMPUTE ["⚙️  Compute — ECS Fargate"]
+        ALB["Application Load Balancer\nHealth Checks · TLS Offload"]
+        API["Spring Boot API\nMin 2 Tasks → Max 10 Tasks\nAuto-Scaled"]
+    end
+
+    subgraph AI ["🤖  AI & ML Services"]
+        BEDROCK["AWS Bedrock\nClaude 3 Sonnet\nChatBuddy AI"]
+        SAGE["SageMaker Endpoint\nXGBoost Wellness Scoring"]
+    end
+
+    subgraph DATA ["🗄️  Data Layer"]
+        RDS["RDS PostgreSQL 16\nMulti-AZ · db.r5.large"]
+        REDIS["ElastiCache Redis\nJWT Blacklist · API Cache"]
+        S3UP["S3 File Storage\nUploads · Assets"]
+    end
+
+    subgraph OBS ["📊  Observability & Notifications"]
+        CW["CloudWatch\nLogs · Metrics · Alarms"]
+        SES["SES\nTransactional Email"]
+        SNS["SNS\nPagerDuty · Slack"]
+    end
+
+    USER --> R53
+    R53 --> WAF
+    WAF --> CF
+    CF --> S3FE
+    CF --> ALB
+    ALB --> API
+    API --> BEDROCK
+    API --> SAGE
+    API --> RDS
+    API --> REDIS
+    API --> S3UP
+    API --> SES
+    API --> CW
+    RDS --> CW
+    SAGE --> CW
+    CW --> SNS
 ```
 
 ---
@@ -57,40 +93,66 @@ graph TD
 
 ## 3. Backend API Layer
 
-### 3.1 Spring Boot REST API
+### 3.1 Auto-Scaling Policy — ECS Fargate (Spring Boot API)
 
-```mermaid
-graph LR
-    subgraph "ECS Fargate — Spring Boot"
-        A["AuthController"] --> S1["AuthService"]
-        B["UserController"] --> S2["UserService"]
-        C["CurriculumController"] --> S3["CurriculumService"]
-        D["QuestionnaireController"] --> S4["QuestionnaireService"]
-        E["ChatController"] --> S5["BedrockChatService"]
-        F["FileController"] --> S6["FileStorageService"]
-        S4 --> S7["MLScoringService"]
-    end
-```
+The ECS service is configured for **Application Auto Scaling** using a combination of **target tracking**, **step scaling**, and **scheduled scaling** to balance performance and cost at all times.
 
-### 3.2 Container Strategy (ECS Fargate)
+#### Container Baseline Configuration
 
 ```
 Service:    empathai-api
 Image:      ECR → empathai/api:latest
-CPU:        512 vCPU (0.5 vCPU)
+CPU:        512 vCPU  (0.5 vCPU per task)
 Memory:     1024 MB
-Min Tasks:  2 (High Availability)
-Max Tasks:  10 (Auto-scaling)
+Min Tasks:  2  — guarantees High Availability across 2 AZs at all times
+Max Tasks:  10 — hard ceiling to cap AWS spend during traffic spikes
 Port:       8080
-Health:     GET /actuator/health
+Health:     GET /actuator/health  →  must return HTTP 200 within 5 s
 ```
 
-**Auto-Scaling Policy:**
-- Scale Out: CPU > 70% for 2 minutes → add 2 tasks
-- Scale In: CPU < 30% for 10 minutes → remove tasks
-- Scheduled: Scale to 4 tasks 8AM–8PM IST on weekdays
+#### Scale-Out Rules (Adding Capacity)
 
-### 3.3 API Design Principles
+| # | Trigger Metric | Condition | Action | Cooldown |
+|---|---|---|---|---|
+| 1 | **CPU Utilisation** | Average CPU > **70%** sustained for **2 min** | Add **2 tasks** | 60 s |
+| 2 | **Memory Utilisation** | Average Memory > **75%** sustained for **3 min** | Add **1 task** | 60 s |
+| 3 | **ALB Request Rate** | RequestCountPerTarget > **500 req/min/task** for **1 min** | Add **2 tasks** | 90 s |
+
+> [!NOTE]
+> Multiple triggers can fire simultaneously. ECS will honour the most aggressive (largest) scale-out action. The 60 s cooldown prevents duplicate triggers from firing within the same burst window.
+
+#### Scale-In Rules (Reducing Capacity)
+
+| # | Trigger Metric | Condition | Action | Cooldown |
+|---|---|---|---|---|
+| 1 | **CPU Utilisation** | Average CPU < **30%** sustained for **10 min** | Remove **1 task** | 300 s |
+| 2 | **Memory Utilisation** | Average Memory < **40%** sustained for **10 min** | Remove **1 task** | 300 s |
+| 3 | **ALB Request Rate** | RequestCountPerTarget < **100 req/min/task** for **15 min** | Remove **1 task** | 300 s |
+
+> [!NOTE]
+> Scale-in cooldown is intentionally **5× longer** than scale-out to prevent task flapping during bursty school-hour traffic patterns. Tasks are never scaled below **Min 2** to ensure cross-AZ redundancy even at idle.
+
+#### Scheduled Scaling (Predictable Load Windows)
+
+School-hour traffic follows a highly predictable pattern. Scheduled actions pre-warm the cluster **before** demand hits, avoiding cold-start latency for students:
+
+| Cron Schedule (IST) | Min Tasks | Max Tasks | Rationale |
+|---|---|---|---|
+| Weekdays **7:30 AM** | 4 | 10 | Pre-warm 30 min before first bell |
+| Weekdays **8 AM – 8 PM** | 4 | 10 | Peak student activity window |
+| Weekdays **8 PM** | 2 | 6 | Evening wind-down; some homework usage expected |
+| **Weekends / Public Holidays** | 2 | 4 | Minimal baseline; HA maintained |
+
+#### Health Check & Self-Healing Policy
+
+- **ALB Target Group Health Check:** `GET /actuator/health` every **30 s**; marked unhealthy after **3 consecutive failures**
+- **ECS Task Replacement:** Unhealthy tasks are immediately deregistered from ALB and replaced by ECS within **< 60 s** — no manual intervention required
+- **Deployment Safety:** Rolling updates keep at least **50% of tasks healthy** (minimum healthy percent = 50, maximum healthy percent = 200)
+- **Rollback Trigger:** If new task version fails health check within **5 min** of deployment, ECS automatically reverts to previous task definition revision
+
+
+
+### 3.2 API Design Principles
 
 | Principle | Implementation |
 |---|---|
@@ -118,67 +180,7 @@ Backup:         Automated daily snapshots (30-day retention)
 Encryption:     AWS KMS at rest + TLS in transit
 Read Replicas:  1 (for reporting/analytics queries)
 ```
-
-### 4.2 Entity Relationship Overview
-
-```mermaid
-erDiagram
-    USERS {
-        bigint id PK
-        string role
-        string name
-        string email
-        string school
-        bool deleted
-        timestamp created_at
-    }
-    SYLLABI {
-        bigint id PK
-        string subject
-        string class_level
-        bool deleted
-    }
-    LEARNING_MODULES {
-        bigint id PK
-        bigint syllabus_id FK
-        string title
-        string video_url
-        bool deleted
-    }
-    QUIZ_QUESTIONS {
-        bigint id PK
-        bigint module_id FK
-        string question_text
-        int correct_answer_index
-    }
-    ASSESSMENT_QUESTIONS {
-        bigint id PK
-        string question_text
-        string question_type
-        int order_index
-        bool deleted
-    }
-    ASSESSMENT_RESPONSES {
-        bigint id PK
-        bigint student_id FK
-        timestamp submitted_at
-        int overall_score
-        string ml_report_json
-    }
-    CHAT_SESSIONS {
-        bigint id PK
-        bigint student_id FK
-        string bedrock_session_id
-        timestamp started_at
-    }
-    USERS ||--o{ ASSESSMENT_RESPONSES : "submits"
-    USERS ||--o{ CHAT_SESSIONS : "has"
-    SYLLABI ||--o{ LEARNING_MODULES : "contains"
-    LEARNING_MODULES ||--o{ QUIZ_QUESTIONS : "has"
-    ASSESSMENT_QUESTIONS ||--o{ ASSESSMENT_RESPONSES : "answered in"
-```
-
-### 4.3 ElastiCache Redis
+### 4.2 ElastiCache Redis
 
 ```
 Purpose:
@@ -247,21 +249,6 @@ Rules:
 - Admin panel shows flagged sessions → Psychologist reviews
 - School admin notified via SES email
 
-### 5.3 Spring Boot Integration
-
-```java
-// BedrockChatService — Key Integration Points
-BedrockRuntimeClient bedrockClient = BedrockRuntimeClient.builder()
-    .region(Region.AP_SOUTH_1)
-    .credentialsProvider(DefaultCredentialsProvider.create())
-    .build();
-
-// Streaming response via Server-Sent Events
-@GetMapping(value = "/api/chat/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-public SseEmitter streamChat(@RequestParam Long sessionId,
-                              @RequestBody ChatRequest req) { ... }
-```
-
 **Cost Control:**
 - Max tokens per response: 500
 - Max messages per session: 50
@@ -298,53 +285,7 @@ graph TD
         K --> C
     end
 ```
-
-### 6.3 Model Design
-
-**Input Features (per questionnaire response):**
-
-| Feature | Description | Type |
-|---|---|---|
-| `mood_score` | Q1: Overall mood (0–10) | Float |
-| `freedom_score` | Q2: Sense of freedom (0–10) | Float |
-| `school_pressure` | Q3: School pressure (inverted) | Float |
-| `peer_pressure` | Q4: Friend pressure (inverted) | Float |
-| `self_pressure` | Q5: Internal pressure (inverted) | Float |
-| `home_pressure` | Q6: Home pressure (inverted) | Float |
-| `memory_accuracy` | Q7: Memory test (0–4 correct) | Float |
-| `class_level` | Grade 1–12 (label encoded) | Int |
-| `previous_avg_score` | Rolling avg of last 3 responses | Float |
-| `days_since_last` | Gap since last assessment | Int |
-
-**Output:**
-
-```json
-{
-  "overall_score": 72,
-  "wellness_tier": "MODERATE",
-  "risk_flags": ["SCHOOL_PRESSURE", "SELF_PRESSURE"],
-  "strengths": ["MEMORY", "PEER_RELATIONS"],
-  "intervention_probabilities": {
-    "BOX_BREATHING": 0.85,
-    "FEELINGS_RELEASE": 0.62,
-    "CHUNKING_PRACTICE": 0.31,
-    "COUNSELOR_REFERRAL": 0.12
-  },
-  "trend": "DECLINING"
-}
-```
-
-**Wellness Tiers:**
-
-| Tier | Score | Action |
-|---|---|---|
-| 🟢 EXCELLENT | 85–100 | Positive reinforcement |
-| 🟡 GOOD | 65–84 | Mild suggestions |
-| 🟠 MODERATE | 45–64 | Targeted interventions |
-| 🔴 NEEDS_SUPPORT | 25–44 | School counselor alert |
-| 🚨 CRITICAL | 0–24 | Immediate psychologist referral |
-
-### 6.4 ML Technology Stack
+### 6.3 ML Technology Stack
 
 ```
 Algorithm:      XGBoost (primary) + Logistic Regression (ensemble)
@@ -356,7 +297,7 @@ Monitoring:     SageMaker Model Monitor (data drift detection)
 Registry:       SageMaker Model Registry (A/B versioning)
 ```
 
-### 6.5 Data Strategy
+### 6.4 Data Strategy
 
 **Initial Bootstrapping (Phase 1):**
 - Use rule-based heuristics (weighted sum of scores) during data collection
@@ -514,133 +455,130 @@ STUDENT       → Own profile + Own responses + Read curriculum
 
 ```mermaid
 graph LR
-    DEV["Developer<br/>Push to main"] --> GH["GitHub Actions"]
-    GH --> TEST["Unit Tests<br/>JUnit + Mockito"]
-    TEST --> BUILD["Maven Build<br/>Docker Build"]
-    BUILD --> SCAN["Security Scan<br/>OWASP + Trivy"]
-    SCAN --> ECR["Push Image<br/>to ECR"]
-    ECR --> ECS_DEPLOY["ECS Rolling<br/>Deploy (Blue/Green)"]
-    ECS_DEPLOY --> HEALTH["Health Check<br/>/actuator/health"]
-    HEALTH --> SMOKE["Smoke Tests"]
-    SMOKE --> DONE["✅ Live"]
+    subgraph DEV ["👨‍💻 Developer"]
+        PUSH["git push / PR merge"]
+    end
 
-    GH2["GitHub Actions<br/>Frontend"] --> S3_SYNC["S3 Sync<br/>React Build"]
-    S3_SYNC --> CF_INVAL["CloudFront<br/>Invalidation"]
-```
+    subgraph CI ["🔄 Continuous Integration — every push"]
+        LINT["Lint & Static Analysis"]
+        UNIT["Unit & Component Tests"]
+        SCAN["Security Scan\nOWASP · Trivy · Snyk"]
+    end
 
-**Deployment Strategy:**
-- **Backend:** ECS Blue/Green deployment (zero downtime)
-- **Frontend:** S3 sync + CloudFront cache invalidation
-- **Database Migrations:** Flyway (auto-run on startup)
-- **Rollback:** ECS previous task definition (< 2 min)
+    subgraph QA ["🧪 QA — Auto-deploy on merge to main"]
+        QA_DEPLOY["Deploy All 4 Components"]
+        QA_TEST["Integration Tests\nE2E Tests — Playwright\nML Validation Suite"]
+    end
 
----
+    subgraph UAT ["👥 UAT — Manual gate approval"]
+        UAT_DEPLOY["Promote Artefacts\nto UAT Environment"]
+        UAT_TEST["Acceptance Tests\nPsychologist Review\nLoad Tests — k6"]
+    end
 
-## 10. Observability & Monitoring
+    subgraph PROD ["🚀 Production — CTO / Lead Engineer approval"]
+        PROD_DEPLOY["Blue-Green Deploy\nAll Components"]
+        SMOKE["Smoke Tests\nHealth Checks"]
+        LIVE["✅ Live"]
+    end
 
-### 10.1 CloudWatch Dashboard — Key Metrics
-
-| Metric | Source | Alert Threshold |
-|---|---|---|
-| API Error Rate | ECS logs | > 1% errors → PagerDuty |
-| API P99 Latency | ALB | > 2000ms → Slack warning |
-| DB CPU | RDS | > 80% → Create Read Replica |
-| DB Connections | RDS | > 80% max → Scale API |
-| Bedrock Token Cost | CloudWatch Bedrock | > $50/day → Alert |
-| ML Endpoint Latency | SageMaker | > 500ms → Alert |
-| Failed Logins | Custom metric | > 50/min/IP → WAF block |
-| Redis Memory | ElastiCache | > 80% used → Scale |
-
-### 10.2 Logging Strategy
-
-```
-Application Logs  → CloudWatch Log Groups
-  /empathai/api   → INFO level (all requests)
-  /empathai/error → ERROR level (exceptions)
-  /empathai/audit → WARN (security events, admin actions)
-
-DB Query Logs     → RDS Enhanced Monitoring
-Bedrock API Calls → CloudTrail
-SageMaker Calls   → CloudWatch Metrics
+    PUSH --> LINT --> UNIT --> SCAN
+    SCAN --> QA_DEPLOY --> QA_TEST
+    QA_TEST -- "✅ All tests pass" --> UAT_DEPLOY --> UAT_TEST
+    UAT_TEST -- "✅ Approved" --> PROD_DEPLOY --> SMOKE --> LIVE
 ```
 
 ---
 
-## 11. Cost Estimation (Monthly — Production)
+### 9.1 Component 1 — React UI (Frontend)
 
-| Service | Estimate (USD/month) |
-|---|---|
-| ECS Fargate (2 tasks × 0.5vCPU × 1GB) | ~$30 |
-| RDS PostgreSQL db.r5.large Multi-AZ | ~$270 |
-| ElastiCache cache.t3.micro | ~$25 |
-| ALB | ~$20 |
-| CloudFront (10GB transfer + requests) | ~$15 |
-| S3 (storage + requests) | ~$10 |
-| **AWS Bedrock (Claude 3 Sonnet)** | ~$100–500* |
-| **SageMaker endpoint (ml.t3.medium)** | ~$50 |
-| SageMaker training jobs (weekly) | ~$20 |
-| SES (10K emails/month) | ~$1 |
-| CloudWatch + logs | ~$20 |
-| Route 53 + ACM + Secrets Manager | ~$15 |
-| WAF | ~$20 |
-| **Total Estimated** | **~$576–$976/month** |
+| Stage | Steps | Tooling | Success Criteria |
+|---|---|---|---|
+| **CI** | ESLint + Prettier · Vitest unit tests · Bundle size check (`< 500 KB gzipped`) | GitHub Actions | 0 lint errors · All tests green · Bundle within size limit |
+| **QA** | `npm run build` → S3 sync to `qa.empathai.in` · CloudFront invalidation · Playwright E2E suite | AWS CLI · Playwright | All Playwright scenarios green · Smoke URLs return HTTP 200 |
+| **UAT** | Same build artefact promoted (no rebuild) to `uat.empathai.in` · Cross-browser runs | AWS S3 copy · BrowserStack | Product owner sign-off · Chrome / Safari / Firefox pass |
+| **Prod** | Atomic S3 sync to `app.empathai.in` · CloudFront cache invalidation · 10 min canary on Route 53 weighted routing (10% new) | AWS CLI · Route 53 | Lighthouse score ≥ 90 · Zero JS errors in CloudWatch · Full cutover after 10 min canary |
 
-> [!NOTE]
-> Bedrock costs scale with usage. At 1,000 active students doing 20 chat messages/day at avg 200 tokens each: ~$120/month. At 10,000 students: ~$1,200/month. Plan for Reserved Instances on RDS after 3 months to save ~40%.
+**QA Details:** Feature flags enabled, seeded with anonymised test data.  
+**UAT Details:** VPN / IP allowlist restricted. Pilot school admin + psychologist team review.  
+**Rollback:** Re-sync previous S3 build artefact from `empathai-releases/` version folder (< 2 min).
 
 ---
 
-## 12. Implementation Roadmap
+### 9.2 Component 2 — Spring Boot Backend (API)
 
-```mermaid
-gantt
-    title EmpathAI Implementation Roadmap
-    dateFormat  YYYY-MM-DD
-    section Phase 1 — Foundation
-    Spring Boot API Core          :p1a, 2026-03-14, 21d
-    Database Schema + Migrations  :p1b, 2026-03-14, 14d
-    Auth + User Management APIs   :p1c, 2026-03-20, 14d
-    AWS Infrastructure Setup      :p1d, 2026-03-20, 10d
+| Stage | Steps | Tooling | Success Criteria |
+|---|---|---|---|
+| **CI** | Maven compile · JUnit + Mockito tests · JaCoCo coverage gate · OWASP dependency check · Trivy Docker image scan | Maven · Docker · GitHub Actions | Coverage ≥ 80% · 0 CRITICAL CVEs · Build < 10 min |
+| **QA** | Docker build → ECR push (tag: `qa-<git-sha>`) · ECS service update (`empathai-api-qa`) · Flyway migrations auto-run · Integration test suite | AWS ECS · Postman/Newman | `/actuator/health` returns UP · All API integration tests pass · DB migrations applied cleanly |
+| **UAT** | Promote ECR image (retag `uat-<git-sha>`) · ECS update (`empathai-api-uat`) · k6 load test (100 virtual users, 5 min ramp) | AWS ECS · k6 | p95 API latency < 500 ms · p99 < 1 s · Zero 5xx errors under load |
+| **Prod** | Blue/Green ECS deploy via AWS CodeDeploy · ALB traffic shifted after health check passes · Flyway auto-migration on startup · Post-deploy smoke suite | AWS CodeDeploy · ECS | Zero-downtime confirmed · p99 < 1 s · Rollback completes in < 2 min if health check fails |
 
-    section Phase 2 — Core Features
-    Curriculum API                :p2a, 2026-04-04, 14d
-    Feelings Explorer API         :p2b, 2026-04-04, 14d
-    File Upload + S3 Integration  :p2c, 2026-04-04, 7d
-    Frontend API Integration      :p2d, 2026-04-10, 14d
+**Rollback Strategy:**
+- **QA / UAT:** Re-deploy previous ECS task definition revision (single CLI command)
+- **Production:** CodeDeploy **auto-rollback** if health check fails within 5 min of traffic cutover
+- **DB Migrations:** Flyway runs forward-only. Breaking changes require a feature flag + dual-write period before migration
 
-    section Phase 3 — AI Integration
-    Bedrock ChatBuddy Integration :p3a, 2026-04-18, 14d
-    Rule-based Scoring Engine     :p3b, 2026-04-18, 7d
-    ML Data Collection + Labeling :p3c, 2026-04-25, 21d
+---
 
-    section Phase 4 — ML Model
-    Feature Engineering Pipeline  :p4a, 2026-05-10, 14d
-    Model Training + Evaluation   :p4b, 2026-05-17, 14d
-    SageMaker Deployment         :p4c, 2026-05-24, 7d
-    A/B Testing + Validation      :p4d, 2026-05-31, 14d
+### 9.3 Component 3 — ML Wellness Scoring Model
 
-    section Phase 5 — Production
-    Security Audit + Pen Testing  :p5a, 2026-06-07, 14d
-    CI/CD Pipeline Setup          :p5b, 2026-06-07, 7d
-    Performance Testing           :p5c, 2026-06-14, 7d
-    Production Launch 🚀           :milestone, 2026-06-28, 0d
+The ML model follows a **separate promotion cadence** — retraining is weekly and each version requires psychologist sign-off before production traffic.
+
+| Stage | Steps | Tooling | Success Criteria |
+|---|---|---|---|
+| **CI** | Python flake8 lint · Unit tests for feature engineering functions · SageMaker Training Job triggered on new labelled dataset | GitHub Actions · SageMaker Pipelines | Training job completes · Accuracy ≥ baseline · No data leakage detected by test suite |
+| **QA** | Register model in SageMaker Model Registry (status: `PendingManualApproval`) · Deploy to `empathai-wellness-qa` endpoint · Automated test suite: 50 synthetic student profiles across all wellness tiers | SageMaker SDK · pytest | Accuracy ≥ 85% on test set · Tier classification matches psychologist labels · Inference latency < 200 ms |
+| **UAT** | Psychologist team reviews 20 edge-case predictions via Admin panel · Shadow mode: old + new model both run in parallel, outputs compared | SageMaker Shadow Endpoints · Admin Panel | Psychologist approval recorded in Model Registry · New model delta within ±5% vs. previous on all wellness tiers |
+| **Prod** | A/B deploy: new model receives **10% traffic** for 48 h via SageMaker endpoint config · Promote to 100% if CloudWatch Model Monitor shows no regression | SageMaker Endpoint Config · CloudWatch | No drift detected · No SageMaker Model Monitor alarms · Rollback: re-route traffic to previous endpoint config (< 5 min) |
+
+**Model Artefact Versioning:**
+```
+S3 Path:  s3://empathai-mlops/models/wellness-score/v{N}/
+Registry: SageMaker Model Registry — group: empathai-wellness
+Tags:     environment=prod|uat|qa · approved_by=<psychologist_name> · accuracy=<score>
 ```
 
 ---
 
-## 13. Team & Resource Requirements
+### 9.4 Component 4 — AWS Bedrock Chatbot (ChatBuddy)
 
-| Role | Responsibility | Count |
-|---|---|---|
-| **Backend Engineer (Java)** | Spring Boot API, AWS integration | 2 |
-| **Frontend Engineer (React)** | API integration, UI polish | 1 |
-| **ML Engineer** | SageMaker model development, pipeline | 1 |
-| **DevOps / Cloud Engineer** | AWS infra, CI/CD, monitoring | 1 |
-| **Clinical Psychologist (Advisor)** | ML label review, prompt engineering, flagged chats | 1 (PT) |
+The chatbot uses a **fully managed model (Claude 3 Sonnet)** — no model training CI step. The pipeline focuses on **system prompt versioning**, **safety guardrail validation**, and **integration testing** of the Java `BedrockService` layer.
+
+| Stage | Steps | Tooling | Success Criteria |
+|---|---|---|---|
+| **CI** | Custom prompt-lint script (length, banned phrases, safety keyword list) · JUnit tests for `BedrockService` Java logic · Flagging-keyword list regression tests | GitHub Actions · JUnit | Prompt passes safety checklist · 0 banned phrases · All service unit tests green |
+| **QA** | Deploy Spring Boot with updated `BEDROCK_SYSTEM_PROMPT` env var to QA ECS service · Automated conversation simulation: 30 synthetic student scenarios including 5 crisis-trigger cases | GitHub Actions · AWS ECS | Crisis escalation fires on all 5 crisis keywords · Avg response latency < 3 s · No hallucinated diagnoses in automated checks |
+| **UAT** | School psychologist conducts live chat sessions on UAT · Admin reviews flagged-chat panel · Hindi language response quality assessment | Manual + Playwright UI scripts | Psychologist sign-off recorded · Flagging accuracy ≥ 95% on crisis scenarios · Hindi responses rated acceptable |
+| **Prod** | Promote ECS task definition with updated env vars (no container image rebuild) · Post-deploy: CloudWatch alarm for Bedrock throttling · 24 h monitoring window | AWS ECS · CloudWatch | Token usage within 10% of previous baseline · p95 chat latency < 4 s · Zero missed crisis flags in first 24 h |
+
+**Prompt Version Control:**
+```
+File:      src/main/resources/prompts/chatbuddy-system-prompt.txt
+Versioned: Git — every change requires a PR with a psychologist as mandatory reviewer
+History:   Fully auditable via git blame / GitHub PR audit trail
+```
 
 ---
 
-## 14. Key Technical Risks & Mitigations
+### 9.5 Environment Summary
+
+| Environment | URL | Deploy Trigger | Approval Required | Data Used |
+|---|---|---|---|---|
+| **QA** | `qa.empathai.in` | Automatic — on every `main` branch merge | None (fully automated) | Synthetic seed data |
+| **UAT** | `uat.empathai.in` | Automatic — after all QA checks pass | **Manual** — Product Owner + Psychologist | Anonymised pilot school data |
+| **Production** | `app.empathai.in` | Automatic — after UAT approval | **Manual** — Lead Engineer + CTO | Live data (encrypted, KMS) |
+
+**Deployment Strategy Summary:**
+- **UI:** Atomic S3 sync + CloudFront invalidation · 10 min canary via Route 53 weighted routing
+- **Backend:** ECS Blue/Green via CodeDeploy · auto-rollback on health check failure · `< 2 min` rollback
+- **ML Model:** SageMaker A/B traffic shift (10% → 100%) · 48 h observation window
+- **Chatbot:** ECS env-var promotion · no image rebuild · prompt changes live in `< 5 min`
+- **DB Migrations:** Flyway (forward-only · auto-run on API container startup)
+
+---
+
+
+## 10. Key Technical Risks & Mitigations
 
 | Risk | Impact | Mitigation |
 |---|---|---|
@@ -653,7 +591,7 @@ gantt
 
 ---
 
-## 15. Compliance & Data Governance
+## 11. Compliance & Data Governance
 
 | Standard | Approach |
 |---|---|
@@ -664,19 +602,151 @@ gantt
 | **Access Logging** | All admin actions logged with user ID + timestamp to CloudWatch |
 | **Right to Erasure** | Soft delete + scheduled hard delete job (90-day policy) |
 
+
+## 12. Scaling Strategy — 500 Students Pilot
+
+This section defines the **right-sized infrastructure configuration** for a controlled pilot launch targeting **500 concurrent active students** (e.g., a single school or district). All values are validated against load-test projections and represent a cost-optimised baseline that can scale up within minutes via the policies defined in **Section 3.1**.
+
+> [!IMPORTANT]
+> **"500 Students" means up to 500 simultaneous active sessions** during peak school hours (10 AM–12 PM and 2 PM–4 PM IST). Total enrolled users may be higher (e.g., 2,000 registered), but only a fraction are active concurrently.
+
 ---
 
-## Appendix: API Surface Area
+### 12.1 Component 1 — React UI (Frontend)
 
-| Domain | Endpoints | Auth Required |
+| Parameter | Value | Rationale |
 |---|---|---|
-| Auth | 4 (login, refresh, logout, me) | Partial |
-| Users | 8 (CRUD + schools + reset-password) | Admin |
-| Curriculum | 10 (syllabi + modules + quiz) | Mixed |
-| Questionnaire | 6 (questions CRUD + submit + report) | Mixed |
-| Chat (Bedrock) | 3 (start session, send message, history) | Student |
-| Files | 2 (upload, serve) | Mixed |
-| **Total** | **~33 endpoints** | — |
+| **Hosting** | AWS S3 + CloudFront | Fully static; scales to unlimited users with zero config change |
+| **CloudFront Caching** | TTL 86,400 s for assets · 0 s for API calls | 500 students share the same cached SPA bundle globally |
+| **Bandwidth Estimate** | ~600 MB / peak hour | 500 users × 1.2 MB avg page size — well within CloudFront free tier |
+| **Estimated Monthly Cost** | < $5 / month | ~10 GB/month transfer at standard CloudFront pricing |
+| **Action Required** | ✅ None | S3 + CloudFront auto-scales; no provisioning changes needed for pilot |
+
+**Traffic Breakdown:**
+```
+Peak concurrent users :  500
+Avg compressed page   :  1.2 MB  (gzipped React bundle + assets)
+Requests / user / hr  :  ~80     (HTML, JS, CSS, API calls via CloudFront)
+Total peak bandwidth  :  ~600 MB / hour  ← comfortably within free tier / low cost tier
+```
+
+---
+
+### 12.2 Component 2 — Spring Boot Backend (API)
+
+| Parameter | Pilot Config (500 students) | Notes |
+|---|---|---|
+| **ECS Task Count** | **2 tasks steady → 4 tasks peak** | Scheduled scale-up to 4 at 7:30 AM on weekdays |
+| **Task Size** | 0.5 vCPU · 1 GB RAM | Handles ~150 concurrent requests/task comfortably |
+| **ALB** | 1 shared ALB | No change needed for pilot |
+| **Target CPU** | ~35–50% at peak | Leaves 2× headroom for burst spikes |
+| **RDS Instance** | `db.t3.medium` (2 vCPU, 4 GB RAM) | Handles 500 concurrent users with HikariCP pool (max 20 connections/task) |
+| **ElastiCache** | `cache.t3.micro` (0.5 GB) | JWT blacklist + 300 s API cache for 500 sessions fits well within memory |
+
+**Request Volume Estimate:**
+```
+500 students × 10 API calls/min avg    =  5,000 req/min  =  ~84 req/s
+2 ECS tasks × ~150 req/s capacity      =  300 req/s total
+Headroom                               =  3.5× — well above peak demand
+
+3rd task triggers only if ML scoring assessments coincide with peak chat usage.
+```
+
+**Scale Trigger Point:** Third task spins up if CPU exceeds 70% on both running tasks — this is expected only during simultaneous back-to-back Feelings Explorer submissions.
+
+---
+
+### 12.3 Component 3 — ML Wellness Scoring Model
+
+The ML model is invoked **only when a student submits the 7-question Feelings Explorer** — not on page loads, API calls, or chat activity. This makes it a **low-frequency, high-value call**.
+
+| Parameter | Pilot Config (500 students) | Notes |
+|---|---|---|
+| **SageMaker Endpoint** | `ml.t3.medium` · **1 instance** | Single instance handles 50+ sync inferences/min |
+| **Expected Rate** | ~1–5 assessments / min during peak | Far below endpoint capacity ceiling |
+| **Inference Latency** | < 200 ms / call | XGBoost model is lightweight (~5 MB artefact) |
+| **Scale Trigger** | Invocations > 30/min sustained for 2 min | Add 1 SageMaker endpoint instance (auto-scaling enabled) |
+| **Cold Start Risk** | Low | Endpoint stays provisioned 24/7; no cold start |
+| **Estimated Monthly Cost** | ~$35–45 / month | 1 × ml.t3.medium always-on |
+
+**Invocation Volume Estimate:**
+```
+500 students × 1 assessment/day ÷ 8 school hours  =  ~1 assessment/min avg
+Peak burst (same lesson period):                    =  ~10–15/min
+Endpoint capacity (ml.t3.medium):                  =  ~50 sync calls/min
+Headroom:                                           =  3–5×  — no auto-scaling needed at 500 students
+```
+
+---
+
+### 12.4 Component 4 — AWS Bedrock Chatbot (ChatBuddy)
+
+Bedrock is **fully managed and serverless** — there is no infrastructure to provision. Scaling is governed by **token quotas** and **per-student rate limits** enforced in the Spring Boot service layer.
+
+| Parameter | Pilot Config (500 students) | Notes |
+|---|---|---|
+| **Bedrock Model** | Claude 3 Sonnet (`ap-south-1`) | No provisioned infrastructure; AWS handles concurrency |
+| **Concurrent Sessions** | Up to 500 (one per student max) | Bedrock handles concurrency natively |
+| **Per-student Limits** | 10 messages/min · 50 messages/session · 500 tokens/response | Enforced in `ChatBuddyService.java` |
+| **Daily Active Chat Users** | ~20% of enrolled = **100 students/day** | Conservative pilot assumption |
+| **Daily Token Usage** | ~700,000 tokens/day | 100 sessions × 7,000 avg tokens/session |
+| **Monthly Token Usage** | ~21 M tokens/month | Blended input + output |
+| **Monthly Chat Cost** | ~$90–120 / month | At Claude 3 Sonnet pricing ($3/1M input · $15/1M output) |
+| **CloudWatch Cost Alarm** | Alert if daily token spend > **$15/day** | Prevents runaway usage during pilot |
+| **Quota Pre-requisite** | Request Bedrock quota increase to **100 RPM** before go-live | Default quota may throttle at 50+ simultaneous users |
+
+**Token Budget Calculation:**
+```
+Assumption         :  20% of 500 students use ChatBuddy/day = 100 sessions
+Avg session        :  10 messages × (200 tokens input + 500 tokens output) = 7,000 tokens
+Daily total        :  100 × 7,000 = 700,000 tokens
+Monthly total      :  ~21 M tokens  (input + output combined)
+Monthly cost       :  ~$90–120  at Sonnet current public pricing
+```
+
+---
+
+### 12.5 Data Layer Capacity for 500 Students
+
+| Resource | Pilot Config | Projected Usage (6 months) | Upgrade Trigger |
+|---|---|---|---|
+| **RDS PostgreSQL** | `db.t3.medium` · 50 GB GP3 SSD | ~5–8 GB data at 6 months | Upgrade to `db.r5.large` at 1,000+ students |
+| **ElastiCache Redis** | `cache.t3.micro` · 0.5 GB | ~50–80 MB active (JWT + cache) | Upgrade at 2,000+ concurrent students |
+| **S3 Storage** | Standard storage | ~20 GB (uploads + report assets) | Auto-scaling; no action required |
+| **CloudWatch Logs** | 30-day retention | ~2 GB ingested / month | Cost-optimise with log filters post-pilot |
+| **RDS Connections** | HikariCP pool: 20 max/task × 2 tasks = 40 connections | Well within `db.t3.medium` connection limit (170 max) | No change needed at pilot scale |
+
+---
+
+### 12.6 Scaling Readiness: 500 → 5,000 Students
+
+| Component | Change Required | Timeline |
+|---|---|---|
+| **React UI** | None — CloudFront scales globally | Immediate, no action |
+| **Spring Boot API** | Auto-scaling handles it (3.1 policies); upgrade RDS to `db.r5.large` | 1 day (RDS resize) |
+| **ML Model** | Enable SageMaker endpoint auto-scaling (already configured); max 3 instances | Instant, no config change |
+| **Chatbot (Bedrock)** | Request Bedrock RPM quota increase from 100 → 500 RPM | 1–3 business days (AWS support ticket) |
+| **Redis** | Upgrade from `cache.t3.micro` to `cache.r6g.medium` | 30 min (ElastiCache vertical scale) |
+
+---
+
+### 12.7 Monthly Cost Summary — 500 Students Pilot
+
+| Service | Configuration | Est. Monthly Cost |
+|---|---|---|
+| ECS Fargate | 2–4 tasks · 0.5 vCPU · 1 GB RAM | $30–60 |
+| RDS PostgreSQL | `db.t3.medium` · Multi-AZ · 50 GB GP3 | $90–110 |
+| ElastiCache Redis | `cache.t3.micro` | $15 |
+| SageMaker Endpoint | `ml.t3.medium` · 24/7 always-on | $35–45 |
+| AWS Bedrock (Claude 3 Sonnet) | ~21 M tokens / month | $90–120 |
+| CloudFront + S3 | ~10 GB transfer + storage | $5–10 |
+| Application Load Balancer | 1 ALB · low LCU usage | $20 |
+| CloudWatch | Logs + metrics + alarms + dashboards | $10–15 |
+| SES | ~5,000 transactional emails / month | $1 |
+| Secrets Manager + KMS | 3 secrets · 1 KMS key | $5 |
+| **Total Estimate** | | **~$301–401 / month** |
 
 > [!TIP]
-> **Recommended first milestone for CTO review:** Complete Phase 1 (API core + AWS infrastructure) with a live demo environment on AWS showing login, user management, and a working Bedrock chat interaction. Target: 3 weeks from today.
+> Apply **AWS Savings Plans** for ECS Fargate and RDS to reduce compute costs by **30–40%**. A 1-year reserved `ml.t3.medium` SageMaker endpoint saves an additional **~40%** on the always-on ML cost. Total post-savings estimate: **~$190–280 / month** for 500 students.
+
+---
