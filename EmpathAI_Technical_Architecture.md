@@ -17,38 +17,38 @@ EmpathAI is a cloud-native, AI-powered emotional based learning platform for sch
 
 ```mermaid
 graph TD
-    USER(["👨‍🎓 Students  |  👩‍💼 Admins\nBrowser · Mobile App"])
+    USER(["👨‍🎓 Students  |  👩‍💼 Admins<br/>Browser · Mobile App"])
 
     subgraph EDGE ["🛡️  Edge & Security Layer"]
-        R53["Route 53\nDNS · Health Routing"]
-        WAF["WAF + Shield Standard\nOWASP Rules · Rate Limiting"]
-        CF["CloudFront CDN\nSSL Termination · Brotli Compression"]
+        R53["Route 53<br/>DNS · Health Routing"]
+        WAF["WAF + Shield Standard<br/>OWASP Rules · Rate Limiting"]
+        CF["CloudFront CDN<br/>SSL Termination · Brotli Compression"]
     end
 
     subgraph FRONT ["🖥️  Frontend"]
-        S3FE["S3 Static Hosting\nReact 18 + Vite SPA"]
+        S3FE["S3 Static Hosting<br/>React 18 + Vite SPA"]
     end
 
     subgraph COMPUTE ["⚙️  Compute — ECS Fargate"]
-        ALB["Application Load Balancer\nHealth Checks · TLS Offload"]
-        API["Spring Boot API\nMin 2 Tasks → Max 10 Tasks\nAuto-Scaled"]
+        ALB["Application Load Balancer<br/>Health Checks · TLS Offload"]
+        API["Spring Boot API<br/>Min 2 Tasks → Max 10 Tasks<br/>Auto-Scaled"]
     end
 
     subgraph AI ["🤖  AI & ML Services"]
-        BEDROCK["AWS Bedrock\nClaude 3 Sonnet\nChatBuddy AI"]
-        SAGE["SageMaker Endpoint\nXGBoost Wellness Scoring"]
+        BEDROCK["AWS Bedrock<br/>Claude 3 Sonnet<br/>ChatBuddy AI"]
+        SAGE["SageMaker Endpoint<br/>XGBoost Wellness Scoring"]
     end
 
     subgraph DATA ["🗄️  Data Layer"]
-        RDS["RDS PostgreSQL 16\nMulti-AZ · db.r5.large"]
-        REDIS["ElastiCache Redis\nJWT Blacklist · API Cache"]
-        S3UP["S3 File Storage\nUploads · Assets"]
+        RDS["RDS PostgreSQL 16<br/>Multi-AZ · db.r5.large"]
+        REDIS["ElastiCache Redis<br/>JWT Blacklist · API Cache"]
+        S3UP["S3 File Storage<br/>Uploads · Assets"]
     end
 
     subgraph OBS ["📊  Observability & Notifications"]
-        CW["CloudWatch\nLogs · Metrics · Alarms"]
-        SES["SES\nTransactional Email"]
-        SNS["SNS\nPagerDuty · Slack"]
+        CW["CloudWatch<br/>Logs · Metrics · Alarms"]
+        SES["SES<br/>Transactional Email"]
+        SNS["SNS<br/>PagerDuty · Slack"]
     end
 
     USER --> R53
@@ -462,22 +462,22 @@ graph LR
     subgraph CI ["🔄 Continuous Integration — every push"]
         LINT["Lint & Static Analysis"]
         UNIT["Unit & Component Tests"]
-        SCAN["Security Scan\nOWASP · Trivy · Snyk"]
+        SCAN["Security Scan<br/>OWASP · Trivy · Snyk"]
     end
 
     subgraph QA ["🧪 QA — Auto-deploy on merge to main"]
         QA_DEPLOY["Deploy All 4 Components"]
-        QA_TEST["Integration Tests\nE2E Tests — Playwright\nML Validation Suite"]
+        QA_TEST["Integration Tests<br/>E2E Tests — Playwright<br/>ML Validation Suite"]
     end
 
     subgraph UAT ["👥 UAT — Manual gate approval"]
-        UAT_DEPLOY["Promote Artefacts\nto UAT Environment"]
-        UAT_TEST["Acceptance Tests\nPsychologist Review\nLoad Tests — k6"]
+        UAT_DEPLOY["Promote Artefacts<br/>to UAT Environment"]
+        UAT_TEST["Acceptance Tests<br/>Psychologist Review<br/>Load Tests — k6"]
     end
 
     subgraph PROD ["🚀 Production — CTO / Lead Engineer approval"]
-        PROD_DEPLOY["Blue-Green Deploy\nAll Components"]
-        SMOKE["Smoke Tests\nHealth Checks"]
+        PROD_DEPLOY["Blue-Green Deploy<br/>All Components"]
+        SMOKE["Smoke Tests<br/>Health Checks"]
         LIVE["✅ Live"]
     end
 
@@ -619,7 +619,7 @@ This section defines the **right-sized infrastructure configuration** for a cont
 | **Hosting** | AWS S3 + CloudFront | Fully static; scales to unlimited users with zero config change |
 | **CloudFront Caching** | TTL 86,400 s for assets · 0 s for API calls | 500 students share the same cached SPA bundle globally |
 | **Bandwidth Estimate** | ~600 MB / peak hour | 500 users × 1.2 MB avg page size — well within CloudFront free tier |
-| **Estimated Monthly Cost** | < $5 / month | ~10 GB/month transfer at standard CloudFront pricing |
+| **Estimated Monthly Cost** | < ₹420 / month | ~10 GB/month transfer at standard CloudFront pricing |
 | **Action Required** | ✅ None | S3 + CloudFront auto-scales; no provisioning changes needed for pilot |
 
 **Traffic Breakdown:**
@@ -667,7 +667,7 @@ The ML model is invoked **only when a student submits the 7-question Feelings Ex
 | **Inference Latency** | < 200 ms / call | XGBoost model is lightweight (~5 MB artefact) |
 | **Scale Trigger** | Invocations > 30/min sustained for 2 min | Add 1 SageMaker endpoint instance (auto-scaling enabled) |
 | **Cold Start Risk** | Low | Endpoint stays provisioned 24/7; no cold start |
-| **Estimated Monthly Cost** | ~$35–45 / month | 1 × ml.t3.medium always-on |
+| **Estimated Monthly Cost** | ~₹2,940–3,780 / month | 1 × ml.t3.medium always-on |
 
 **Invocation Volume Estimate:**
 ```
@@ -691,8 +691,8 @@ Bedrock is **fully managed and serverless** — there is no infrastructure to pr
 | **Daily Active Chat Users** | ~20% of enrolled = **100 students/day** | Conservative pilot assumption |
 | **Daily Token Usage** | ~700,000 tokens/day | 100 sessions × 7,000 avg tokens/session |
 | **Monthly Token Usage** | ~21 M tokens/month | Blended input + output |
-| **Monthly Chat Cost** | ~$90–120 / month | At Claude 3 Sonnet pricing ($3/1M input · $15/1M output) |
-| **CloudWatch Cost Alarm** | Alert if daily token spend > **$15/day** | Prevents runaway usage during pilot |
+| **Monthly Chat Cost** | ~₹7,560–10,080 / month | At Claude 3 Sonnet pricing (₹252/1M input · ₹1,260/1M output) |
+| **CloudWatch Cost Alarm** | Alert if daily token spend > **₹1,260/day** | Prevents runaway usage during pilot |
 | **Quota Pre-requisite** | Request Bedrock quota increase to **100 RPM** before go-live | Default quota may throttle at 50+ simultaneous users |
 
 **Token Budget Calculation:**
@@ -701,7 +701,7 @@ Assumption         :  20% of 500 students use ChatBuddy/day = 100 sessions
 Avg session        :  10 messages × (200 tokens input + 500 tokens output) = 7,000 tokens
 Daily total        :  100 × 7,000 = 700,000 tokens
 Monthly total      :  ~21 M tokens  (input + output combined)
-Monthly cost       :  ~$90–120  at Sonnet current public pricing
+Monthly cost       :  ~₹7,560–10,080  at Sonnet current public pricing (1 USD = ₹84)
 ```
 
 ---
@@ -732,21 +732,24 @@ Monthly cost       :  ~$90–120  at Sonnet current public pricing
 
 ### 12.7 Monthly Cost Summary — 500 Students Pilot
 
-| Service | Configuration | Est. Monthly Cost |
+| Service | Configuration | Est. Monthly Cost (INR) |
 |---|---|---|
-| ECS Fargate | 2–4 tasks · 0.5 vCPU · 1 GB RAM | $30–60 |
-| RDS PostgreSQL | `db.t3.medium` · Multi-AZ · 50 GB GP3 | $90–110 |
-| ElastiCache Redis | `cache.t3.micro` | $15 |
-| SageMaker Endpoint | `ml.t3.medium` · 24/7 always-on | $35–45 |
-| AWS Bedrock (Claude 3 Sonnet) | ~21 M tokens / month | $90–120 |
-| CloudFront + S3 | ~10 GB transfer + storage | $5–10 |
-| Application Load Balancer | 1 ALB · low LCU usage | $20 |
-| CloudWatch | Logs + metrics + alarms + dashboards | $10–15 |
-| SES | ~5,000 transactional emails / month | $1 |
-| Secrets Manager + KMS | 3 secrets · 1 KMS key | $5 |
-| **Total Estimate** | | **~$301–401 / month** |
+| ECS Fargate | 2–4 tasks · 0.5 vCPU · 1 GB RAM | ₹2,520–5,040 |
+| RDS PostgreSQL | `db.t3.medium` · Multi-AZ · 50 GB GP3 | ₹7,560–9,240 |
+| ElastiCache Redis | `cache.t3.micro` | ₹1,260 |
+| SageMaker Endpoint | `ml.t3.medium` · 24/7 always-on | ₹2,940–3,780 |
+| AWS Bedrock (Claude 3 Sonnet) | ~21 M tokens / month | ₹7,560–10,080 |
+| CloudFront + S3 | ~10 GB transfer + storage | ₹420–840 |
+| Application Load Balancer | 1 ALB · low LCU usage | ₹1,680 |
+| CloudWatch | Logs + metrics + alarms + dashboards | ₹840–1,260 |
+| SES | ~5,000 transactional emails / month | ₹84 |
+| Secrets Manager + KMS | 3 secrets · 1 KMS key | ₹420 |
+| **Total Estimate** | | **~₹25,284–33,684 / month** |
+
+> [!NOTE]
+> All costs are estimated at **1 USD = ₹84** (March 2026 exchange rate). AWS bills in USD; actual INR amounts will fluctuate with the exchange rate.
 
 > [!TIP]
-> Apply **AWS Savings Plans** for ECS Fargate and RDS to reduce compute costs by **30–40%**. A 1-year reserved `ml.t3.medium` SageMaker endpoint saves an additional **~40%** on the always-on ML cost. Total post-savings estimate: **~$190–280 / month** for 500 students.
+> Apply **AWS Savings Plans** for ECS Fargate and RDS to reduce compute costs by **30–40%**. A 1-year reserved `ml.t3.medium` SageMaker endpoint saves an additional **~40%** on the always-on ML cost. Total post-savings estimate: **~₹15,960–23,520 / month** for 500 students.
 
 ---
