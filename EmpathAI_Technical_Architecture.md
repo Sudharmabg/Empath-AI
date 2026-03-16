@@ -132,17 +132,6 @@ Health:     GET /actuator/health  →  must return HTTP 200 within 5 s
 > [!NOTE]
 > Scale-in cooldown is intentionally **5× longer** than scale-out to prevent task flapping during bursty school-hour traffic patterns. Tasks are never scaled below **Min 2** to ensure cross-AZ redundancy even at idle.
 
-#### Scheduled Scaling (Predictable Load Windows)
-
-School-hour traffic follows a highly predictable pattern. Scheduled actions pre-warm the cluster **before** demand hits, avoiding cold-start latency for students:
-
-| Cron Schedule (IST) | Min Tasks | Max Tasks | Rationale |
-|---|---|---|---|
-| Weekdays **7:30 AM** | 4 | 10 | Pre-warm 30 min before first bell |
-| Weekdays **8 AM – 8 PM** | 4 | 10 | Peak student activity window |
-| Weekdays **8 PM** | 2 | 6 | Evening wind-down; some homework usage expected |
-| **Weekends / Public Holidays** | 2 | 4 | Minimal baseline; HA maintained |
-
 #### Health Check & Self-Healing Policy
 
 - **ALB Target Group Health Check:** `GET /actuator/health` every **30 s**; marked unhealthy after **3 consecutive failures**
@@ -566,7 +555,7 @@ History:   Fully auditable via git blame / GitHub PR audit trail
 |---|---|---|---|---|
 | **QA** | `qa.empathai.in` | Automatic — on every `main` branch merge | None (fully automated) | Synthetic seed data |
 | **UAT** | `uat.empathai.in` | Automatic — after all QA checks pass | **Manual** — Product Owner + Psychologist | Anonymised pilot school data |
-| **Production** | `app.empathai.in` | Automatic — after UAT approval | **Manual** — Lead Engineer + CTO | Live data (encrypted, KMS) |
+| **Production** | `app.empathai.in` | Automatic — after UAT approval | **Manual** — Lead Engineer | Live data (encrypted, KMS) |
 
 **Deployment Strategy Summary:**
 - **UI:** Atomic S3 sync + CloudFront invalidation · 10 min canary via Route 53 weighted routing
@@ -748,8 +737,5 @@ Monthly cost       :  ~₹7,560–10,080  at Sonnet current public pricing (1 US
 
 > [!NOTE]
 > All costs are estimated at **1 USD = ₹84** (March 2026 exchange rate). AWS bills in USD; actual INR amounts will fluctuate with the exchange rate.
-
-> [!TIP]
-> Apply **AWS Savings Plans** for ECS Fargate and RDS to reduce compute costs by **30–40%**. A 1-year reserved `ml.t3.medium` SageMaker endpoint saves an additional **~40%** on the always-on ML cost. Total post-savings estimate: **~₹15,960–23,520 / month** for 500 students.
 
 ---
